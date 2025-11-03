@@ -9,11 +9,21 @@ def load_test_set(path):
     with open(path, 'r', encoding='utf-8') as f:
         return [w.strip().upper() for w in f if w.strip()]
 
-def main(corpus_path='corpus.txt', test_path='test.txt', max_lives=6, verbose=False):
+def main(corpus_path=None, test_path=None, max_lives=6, verbose=False):
+    # Determine default paths relative to this file if not provided
+    base_dir = os.path.dirname(__file__)
+    data_dir = os.path.join(base_dir, "data")
+
+    if corpus_path is None:
+        corpus_path = os.path.join(data_dir, "corpus.txt")
+    if test_path is None:
+        test_path = os.path.join(data_dir, "test.txt")
+
     # 1. load corpus
     corpus_list = load_corpus(corpus_path)  # returns uppercase list
     corpus_dict = preprocess_corpus(corpus_list)  # {length: set(words)}
     unigram = get_unigram_fallback(corpus_list)  # ['E','A',...]
+
     # 2. instantiate model and agent
     prob_model = ProbabilisticModel(corpus_dict)
     agent = Agent(prob_model, unigram)
@@ -40,6 +50,8 @@ def main(corpus_path='corpus.txt', test_path='test.txt', max_lives=6, verbose=Fa
                 total_repeated_guesses += 1
             elif info.get('status') == 'wrong':
                 total_wrong_guesses += 1
+
+        # after the game ends, check final status
         if info.get('status') == 'win':
             total_wins += 1
 
@@ -47,7 +59,7 @@ def main(corpus_path='corpus.txt', test_path='test.txt', max_lives=6, verbose=Fa
             print(f"Processed {i}/{len(test_words)}. Wins: {total_wins}")
 
     # 6. metrics
-    success_rate = total_wins / len(test_words)
+    success_rate = total_wins / len(test_words) if test_words else 0.0
     final_score = (success_rate * 2000) - (total_wrong_guesses * 5) - (total_repeated_guesses * 2)
 
     print("=== Results ===")
