@@ -1,6 +1,7 @@
-# prob_model.py -- improved probabilistic filter (positional + unigram backoff)
+# prob_model.py -- cleaned version
+
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Dict, Set, Tuple, Optional
 
 class ProbabilisticModel:
@@ -12,66 +13,49 @@ class ProbabilisticModel:
     def __init__(self, corpus_dict):
         # corpus_dict: {length: set(words)} with words in UPPERCASE
         self.corpus = corpus_dict
-        # Precompute unigram frequencies across entire corpus for robust fallback
+
+        # Precompute unigram frequencies across entire corpus for fallback
         all_letters = Counter()
-        for length_set in corpus_dict.values():
-            for w in length_set:
+        for words in corpus_dict.values():
+            for w in words:
                 all_letters.update(w)
         self.unigram_counts = dict(all_letters)
         self.unigram_total = sum(self.unigram_counts.values()) or 1
 
         # Precompute position counts per length
-        # position_counts[length][pos] -> Counter of letters in that position
         self.position_counts = {}
-        for L, words in self.corpus.items():
+        for L, words in corpus_dict.items():
             pos_counts = [Counter() for _ in range(L)]
             for w in words:
                 for i, ch in enumerate(w):
                     pos_counts[i][ch] += 1
             self.position_counts[L] = pos_counts
 
-    def _position_score(self, length: int, blank_indices: list, candidates: list, guessed_set: Set[str]):
-        """
-        For each letter, accumulate position-weighted counts across candidate words.
-        Returns a Counter mapping letter -> score (not normalized).
-        """
+    def _position_score(self, blanks: list, candidates: list) -> Counter:
         counts = Counter()
         for w in candidates:
-            for i in blank_indices:
+            for i in blanks:
                 counts[w[i]] += 1
         return counts
 
-    def _positional_backoff_probs(self, length: int, blank_indices: list, candidates: list, guessed_set: Set[str]):
-        """
-        Compute positional probabilities with Laplace smoothing, plus unigram backoff.
-        Returns dict letter->prob.
-        """
-        # positional counts on candidates
-        pos_counts = self._position_score(length, blank_indices, candidates, guessed_set)
+    def _positional_backoff_probs(self, length: int, blanks: list, candidates: list, guessed_set: Set[str]):
+        pos_counts = self._position_score(blanks, candidates)
         total_pos = sum(pos_counts.values())
 
-        # Laplace smoothing param
         alpha = 1.0
-
-        # Build set of all potential letters (A-Z)
         import string
         letters = list(string.ascii_uppercase)
+        V = 26
 
         probs = {}
-        V = 26  # alphabet size
         for L in letters:
-            # position-based probability (smoothed)
             p_pos = (pos_counts.get(L, 0) + alpha) / (total_pos + alpha * V)
-            # unigram backoff probability
             p_uni = (self.unigram_counts.get(L, 0) + alpha) / (self.unigram_total + alpha * V)
-            # weighted combination: favor positional signal but keep unigram as fallback
             probs[L] = 0.75 * p_pos + 0.25 * p_uni
 
-        # zero-out already guessed letters
         for g in guessed_set:
             probs.pop(g, None)
 
-        # normalize
         s = sum(probs.values()) or 1.0
         for k in list(probs.keys()):
             probs[k] = probs[k] / s
@@ -91,19 +75,15 @@ class ProbabilisticModel:
         if not candidates:
             return None
 
-        # Build regex for exact pattern
         pattern = '^' + ''.join('.' if ch == '_' else ch for ch in masked) + '$'
         regex = re.compile(pattern)
         matches = [w for w in candidates if regex.match(w)]
         if not matches:
-            # No regex matches: backoff to all words of same length
             matches = candidates
 
-        # invalid letters are guessed letters not present in visible pattern (wrong guesses)
         invalids = {g for g in guessed_set if g not in set(masked)}
         filtered = [w for w in matches if not any(ch in invalids for ch in w)]
         if not filtered:
-            # if we have nothing after filtering, backoff to matches without invalid filtering
             filtered = matches
             if not filtered:
                 return None
