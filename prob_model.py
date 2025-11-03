@@ -1,135 +1,96 @@
-"""
-Probabilistic letter model for Hangman.
+# prob_model.py -- cleaned version
 
-This module defines the ProbabilisticModel class which, given a preprocessed
-corpus grouped by word length, filters candidate words based on the current
-game state and returns a probability distribution over unguessed letters
-appearing in any blank positions.
-
-Assumptions:
-- Masked characters are represented by "_" (underscore) in the masked_word.
-- Words and guesses are treated in a case-insensitive manner; internally we
-  normalize to uppercase.
-"""
-
-from __future__ import annotations
-
-from collections import Counter
-from typing import Dict, Optional, Sequence, Set, Tuple
 import re
-
+from collections import Counter
+from typing import Dict, Set, Tuple, Optional
 
 class ProbabilisticModel:
-	"""Compute letter probabilities for Hangman based on a filtered corpus.
+    """
+    Probabilistic filter that returns a probability distribution over unguessed letters
+    given (masked_word, guessed_set, remaining_lives).
+    Uses position-wise frequencies + unigram fallback with smoothing.
+    """
+    def __init__(self, corpus_dict):
+        # corpus_dict: {length: set(words)} with words in UPPERCASE
+        self.corpus = corpus_dict
 
-	Parameters
-	----------
-	processed_corpus_dict : Dict[int, Set[str]]
-		Mapping from word length to a set (or sequence) of words of that length.
-		Words are assumed to be alphabetic. Case-insensitive input is accepted
-		and normalized to uppercase.
+        # Precompute unigram frequencies across entire corpus for fallback
+        all_letters = Counter()
+        for words in corpus_dict.values():
+            for w in words:
+                all_letters.update(w)
+        self.unigram_counts = dict(all_letters)
+        self.unigram_total = sum(self.unigram_counts.values()) or 1
 
-	Notes
-	-----
-	The main entry point is `get_letter_probabilities(state)` where `state` is a
-	tuple of (masked_word, guessed_letters_set).
-	"""
+        # Precompute position counts per length
+        self.position_counts = {}
+        for L, words in corpus_dict.items():
+            pos_counts = [Counter() for _ in range(L)]
+            for w in words:
+                for i, ch in enumerate(w):
+                    pos_counts[i][ch] += 1
+            self.position_counts[L] = pos_counts
 
-	BLANK_CHAR = "_"
+    def _position_score(self, blanks: list, candidates: list) -> Counter:
+        counts = Counter()
+        for w in candidates:
+            for i in blanks:
+                counts[w[i]] += 1
+        return counts
 
-	def __init__(self, processed_corpus_dict: Dict[int, Sequence[str]]):
-		# Normalize all corpus words to uppercase and coerce to sets for fast membership.
-		self.corpus_dict: Dict[int, Set[str]] = {}
-		for length, words in processed_corpus_dict.items():
-			# Defensive: allow any iterable of strings.
-			normalized = {w.upper() for w in words if isinstance(w, str)}
-			self.corpus_dict[int(length)] = normalized
+    def _positional_backoff_probs(self, length: int, blanks: list, candidates: list, guessed_set: Set[str]):
+        pos_counts = self._position_score(blanks, candidates)
+        total_pos = sum(pos_counts.values())
 
-	def get_letter_probabilities(
-		self, state: Tuple[str, Set[str]]
-	) -> Optional[Dict[str, float]]:
-		"""Return probabilities over unguessed letters given game state.
+        alpha = 1.0
+        import string
+        letters = list(string.ascii_uppercase)
+        V = 26
 
-		Parameters
-		----------
-		state : Tuple[str, Set[str]]
-			A tuple of (masked_word, guessed_letters_set). The masked_word uses
-			'_' to indicate unknown letters, and concrete letters for known
-			positions. guessed_letters_set contains all letters that have been
-			guessed so far (both correct and incorrect).
+        probs = {}
+        for L in letters:
+            p_pos = (pos_counts.get(L, 0) + alpha) / (total_pos + alpha * V)
+            p_uni = (self.unigram_counts.get(L, 0) + alpha) / (self.unigram_total + alpha * V)
+            probs[L] = 0.75 * p_pos + 0.25 * p_uni
 
-		Returns
-		-------
-		Optional[Dict[str, float]]
-			A dictionary mapping each unguessed letter (A-Z) to its probability
-			of appearing in any of the blank positions across all valid
-			candidate words. Returns None if no valid candidate words remain.
-		"""
+        for g in guessed_set:
+            probs.pop(g, None)
 
-		masked_word, guessed_letters = state
-		if masked_word is None:
-			return None
+        s = sum(probs.values()) or 1.0
+        for k in list(probs.keys()):
+            probs[k] = probs[k] / s
 
-		# Normalize to uppercase to ensure consistent comparisons.
-		masked_word = masked_word.upper()
-		guessed_letters = {c.upper() for c in (guessed_letters or set())}
+        return probs
 
-		length = len(masked_word)
-		potential_words = self.corpus_dict.get(length, set())
-		if not potential_words:
-			return None
+    def get_letter_probabilities(self, state: Tuple[str, Set[str], int]) -> Optional[Dict[str, float]]:
+        # Accept either (masked, guessed_set, lives) or (masked, guessed_set)
+        if len(state) == 3:
+            masked_word, guessed_set, _ = state
+        else:
+            masked_word, guessed_set = state
 
-		# Build regex replacing blanks with '.' and anchoring to full match.
-		# Non-blank characters are treated literally. Assume only A-Z and '_' appear.
-		# Example: _PPL_ -> ^.PPL.$
-		regex_pattern = "^" + re.escape(masked_word).replace(re.escape(self.BLANK_CHAR), ".") + "$"
-		pattern = re.compile(regex_pattern)
+        masked = masked_word.replace(' ', '').upper()
+        L = len(masked)
+        candidates = list(self.corpus.get(L, set()))
+        if not candidates:
+            return None
 
-		# 1) Regex filter
-		regex_matches = [w for w in potential_words if pattern.match(w)]
-		if not regex_matches:
-			return None
+        pattern = '^' + ''.join('.' if ch == '_' else ch for ch in masked) + '$'
+        regex = re.compile(pattern)
+        matches = [w for w in candidates if regex.match(w)]
+        if not matches:
+            matches = candidates
 
-		# 2) Remove words containing letters that have been guessed but are NOT in the masked pattern
-		#    (i.e., previously guessed wrong letters)
-		revealed_letters = set(ch for ch in masked_word if ch != self.BLANK_CHAR)
-		invalid_letters = guessed_letters - revealed_letters
+        invalids = {g for g in guessed_set if g not in set(masked)}
+        filtered = [w for w in matches if not any(ch in invalids for ch in w)]
+        if not filtered:
+            filtered = matches
+            if not filtered:
+                return None
 
-		if invalid_letters:
-			invalid_re = re.compile("[" + "".join(sorted(invalid_letters)) + "]")
-			valid_words = [w for w in regex_matches if not invalid_re.search(w)]
-		else:
-			valid_words = regex_matches
+        blanks = [i for i, ch in enumerate(masked) if ch == '_']
+        if not blanks:
+            return None
 
-		if not valid_words:
-			return None
-
-		# 3) Count letter frequencies ONLY in blank positions across valid words.
-		blank_positions = [i for i, ch in enumerate(masked_word) if ch == self.BLANK_CHAR]
-		if not blank_positions:
-			# No blanks left; nothing to predict.
-			return {}
-
-		counts: Counter[str] = Counter()
-		for w in valid_words:
-			for i in blank_positions:
-				ch = w[i]
-				counts[ch] += 1
-
-		# Exclude letters that have already been guessed from probability candidates.
-		for g in guessed_letters:
-			if g in counts:
-				del counts[g]
-
-		total = sum(counts.values())
-		if total == 0:
-			return {}
-
-		probs = {ch: counts[ch] / total for ch in counts}
-		# Sort not required by spec, but stable order can help downstream.
-		# Return as-is; callers can sort if needed.
-		return probs
-
-
-__all__ = ["ProbabilisticModel"]
-
+        probs = self._positional_backoff_probs(L, blanks, filtered, guessed_set)
+        return probs

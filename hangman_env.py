@@ -7,8 +7,8 @@ class HangmanEnv:
     """
     def __init__(self, word: str, lives: int = 6):
         """Initializes the game with a secret word and starting lives."""
-        self.secret_word = word.upper()
-        self.initial_lives = lives
+        self.secret_word = str(word).upper()
+        self.initial_lives = int(lives)
         self.reset()
 
     def _get_masked_word(self) -> str:
@@ -38,12 +38,15 @@ class HangmanEnv:
 
     def step(self, letter: str) -> tuple:
         """
-        Processes a single letter guess. This is the most important method.
+        Processes a single letter guess.
 
         Returns a tuple: (new_state, done, info_dict)
         """
-        letter = letter.upper()
-        
+        if not letter:
+            return self.get_state(), False, {'status': 'repeat', 'is_repeat': True}
+
+        letter = str(letter).upper()
+
         # Initialize return values
         done = False
         info_dict = {'status': 'new_guess', 'is_repeat': False}
@@ -51,28 +54,26 @@ class HangmanEnv:
         # 1. Handle repeated guess
         if letter in self.guessed_letters:
             info_dict = {'status': 'repeat', 'is_repeat': True}
-            new_state = self.get_state() # State doesn't change
-            return (new_state, done, info_dict)
+            return (self.get_state(), done, info_dict)
 
         # Mark letter as guessed
         self.guessed_letters.add(letter)
-        
+
         # 2. Handle correct or incorrect new guess
         if letter in self.secret_word:
-            info_dict['status'] = 'correct'
-            
-            # Check for win condition after a correct guess
+            # correct guess
             if self._is_win():
                 done = True
-                info_dict['status'] = 'win'
+                info_dict = {'status': 'win', 'is_repeat': False}
+            else:
+                info_dict = {'status': 'correct', 'is_repeat': False}
         else:
-            info_dict['status'] = 'wrong'
+            # wrong guess
             self.remaining_lives -= 1
-            
-            # Check for lose condition after an incorrect guess
             if self.remaining_lives <= 0:
                 done = True
-                info_dict['status'] = 'lose'
+                info_dict = {'status': 'lose', 'is_repeat': False}
+            else:
+                info_dict = {'status': 'wrong', 'is_repeat': False}
 
-        new_state = self.get_state()
-        return (new_state, done, info_dict)
+        return (self.get_state(), done, info_dict)
